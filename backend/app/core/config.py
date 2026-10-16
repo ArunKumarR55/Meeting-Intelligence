@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     database_path: Path = PROJECT_ROOT / "data" / "amip.sqlite3"
 
     gemini_api_key: SecretStr | None = None
+    assemblyai_api_key: SecretStr | None = None
     huggingface_token: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("HF_TOKEN", "HUGGINGFACE_TOKEN"),
@@ -67,11 +68,6 @@ class Settings(BaseSettings):
     microsoft_calendar_tenant: str = "common"
 
     github_token: SecretStr | None = None
-
-    meeting_agent_enabled: bool = True
-    meeting_agent_name: str = "AMIP Meeting Assistant"
-    meeting_audio_device: str = "BlackHole 2ch"
-    meeting_agent_browser_headless: bool = False
 
     cors_origins: list[str] = [
         "http://localhost:5173",

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.v1.endpoints import audio, calendar, followthrough, meetings, rag, workflows
-from app.api.v1.endpoints import meeting_agent
+from app.api.v1.endpoints.assemblyai import router as assemblyai_router
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.db.models import domain as domain_models  # noqa: F401
@@ -70,7 +70,10 @@ async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title=settings.app_name,
-    description="Privacy-first Autonomous Meeting Intelligence Platform API.",
+    description=(
+        "Autonomous Meeting Intelligence Platform API with local manual-audio processing "
+        "and AssemblyAI/Gemini-powered live meeting analysis."
+    ),
     version="0.1.0",
     debug=settings.debug,
     lifespan=lifespan,
@@ -90,7 +93,7 @@ app.include_router(rag.router, prefix="/api/v1/rag", tags=["corporate memory"])
 app.include_router(workflows.router, prefix="/api/v1/workflows", tags=["workflows"])
 app.include_router(followthrough.router, prefix="/api/v1/follow-through", tags=["follow-through"])
 app.include_router(calendar.router, prefix="/api/v1/calendar", tags=["calendar"])
-app.include_router(meeting_agent.router, prefix="/api/v1/meeting-agent", tags=["live meeting agent"])
+app.include_router(assemblyai_router, prefix="/api/assemblyai", tags=["AssemblyAI"])
 
 
 @app.get("/health", tags=["health"], summary="Check application health")

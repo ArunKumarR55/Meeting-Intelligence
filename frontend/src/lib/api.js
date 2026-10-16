@@ -1,9 +1,9 @@
 const API_BASE = "/api/v1";
 
-async function request(path, options = {}) {
+async function request(path, options = {}, base = API_BASE) {
   let response;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    response = await fetch(`${base}${path}`, {
       credentials: "same-origin",
       ...options,
     });
@@ -47,37 +47,25 @@ export function uploadMeeting(formData) {
   });
 }
 
-export function startLiveMeeting(meetingUrl, title, recipients, consentToRecord) {
-  return request("/meeting-agent/start", {
+export function getAssemblyAIToken() {
+  return request("/token", {}, "/api/assemblyai");
+}
+
+export function processLiveMeeting({ title, recipients, transcript, transcriptSegments }) {
+  const cleanTranscript = String(transcript ?? "").trim();
+  if (!cleanTranscript) {
+    throw new TypeError("The live transcript is empty. Keep recording until some speech is transcribed.");
+  }
+  return request("/process_meeting", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      meeting_url: String(meetingUrl ?? "").trim(),
       title: String(title ?? "").trim(),
       recipients,
-      consent_to_record: consentToRecord === true,
+      transcript: cleanTranscript,
+      transcript_segments: Array.isArray(transcriptSegments) ? transcriptSegments : [],
     }),
-  });
-}
-
-export function getLiveMeetingStatus(sessionId) {
-  if (!/^[a-f0-9]{32}$/.test(String(sessionId ?? ""))) {
-    throw new TypeError("A valid live meeting session ID is required.");
-  }
-  return request(`/meeting-agent/${encodeURIComponent(sessionId)}`);
-}
-
-export function getActiveLiveMeetingStatus() {
-  return request("/meeting-agent/active");
-}
-
-export function stopLiveMeeting(sessionId) {
-  if (!/^[a-f0-9]{32}$/.test(String(sessionId ?? ""))) {
-    throw new TypeError("A valid live meeting session ID is required.");
-  }
-  return request(`/meeting-agent/${encodeURIComponent(sessionId)}/stop`, {
-    method: "POST",
-  });
+  }, "/api/assemblyai");
 }
 
 export function getMomRecipients() {
