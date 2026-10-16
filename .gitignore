@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# JavaScript / build output
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases, recordings, model weights, and generated data
+*.sqlite
+*.sqlite3
+*.db
+data/*
+!data/.local/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.pt
+*.pth
+*.bin
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
