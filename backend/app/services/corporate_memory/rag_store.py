@@ -12,8 +12,9 @@ from app.services.audio_ingestion.pii_redactor import redact_pii
 
 
 CHROMA_DIRECTORY = PROJECT_ROOT / "data" / "chroma_db"
-CHUNK_SIZE_CHARACTERS = 1_000
-CHUNK_OVERLAP_CHARACTERS = 150
+CHUNK_SIZE_CHARACTERS = 400
+CHUNK_OVERLAP_CHARACTERS = 80
+TIMESTAMP_METADATA_VERSION = 2
 UPSERT_BATCH_SIZE = 500
 COLLECTION_NAME = "amip_memory"
 
@@ -80,6 +81,7 @@ def _validate_meeting_id(meeting_id: int) -> None:
 
 def _segment_character_ranges(
     transcript_segments: Sequence[Mapping[str, Any]] | None,
+    transcript: str,
 ) -> list[tuple[int, int, float, float, str | None]]:
     """Map joined transcript character positions back to ASR time ranges."""
     ranges: list[tuple[int, int, float, float, str | None]] = []
@@ -94,16 +96,21 @@ def _segment_character_ranges(
             cursor += len(text) + 1
             continue
         speaker_id = segment.get("speaker_id")
+        segment_start = transcript.find(text, cursor)
+        if segment_start < 0:
+            # Keep the cumulative-position fallback for ASR providers whose
+            # utterance text differs slightly from the returned full transcript.
+            segment_start = cursor
         ranges.append(
             (
-                cursor,
-                cursor + len(text),
+                segment_start,
+                segment_start + len(text),
                 float(start_seconds),
                 float(end_seconds),
                 speaker_id if isinstance(speaker_id, str) else None,
             )
         )
-        cursor += len(text) + 1
+        cursor = segment_start + len(text) + 1
     return ranges
 
 
@@ -127,7 +134,7 @@ def index_meeting_transcript(
         raise ValueError("transcript must contain non-whitespace content")
 
     chunks = _chunk_transcript(safe_transcript)
-    segment_ranges = _segment_character_ranges(transcript_segments)
+    segment_ranges = _segment_character_ranges(transcript_segments, safe_transcript)
     chunk_ids = [
         f"meeting-{meeting_id}-chunk-{index}-"
         f"{hashlib.sha256(chunk.encode('utf-8')).hexdigest()[:16]}"
@@ -149,6 +156,7 @@ def index_meeting_transcript(
                 "chunk_index": chunk_index,
                 "character_start": start,
                 "character_end": end,
+                "timestamp_version": TIMESTAMP_METADATA_VERSION,
             }
             covered_segments = [
                 segment
@@ -156,7 +164,21 @@ def index_meeting_transcript(
                 if min(end, segment[1]) > max(start, segment[0])
             ]
             if covered_segments:
-                metadata["start_seconds"] = min(segment[2] for segment in covered_segments)
+                chunk_start = start
+                timestamp_start = None
+                for segment_start, segment_end, time_start, time_end, _speaker in covered_segments:
+                    if segment_end <= chunk_start:
+                        continue
+                    character_offset = max(0, chunk_start - segment_start)
+                    segment_characters = max(1, segment_end - segment_start)
+                    fraction = min(1.0, character_offset / segment_characters)
+                    timestamp_start = time_start + (time_end - time_start) * fraction
+                    break
+                metadata["start_seconds"] = (
+                    timestamp_start
+                    if timestamp_start is not None
+                    else min(segment[2] for segment in covered_segments)
+                )
                 metadata["end_seconds"] = max(segment[3] for segment in covered_segments)
                 speaker_ids = list(
                     dict.fromkeys(
@@ -229,6 +251,7 @@ def query_memory(
                 "character_end": metadata.get("character_end"),
                 "start_seconds": metadata.get("start_seconds"),
                 "end_seconds": metadata.get("end_seconds"),
+                "timestamp_version": metadata.get("timestamp_version"),
                 "speaker_ids": metadata.get("speaker_ids"),
                 "transcript_chunk": document,
                 "distance": distance,

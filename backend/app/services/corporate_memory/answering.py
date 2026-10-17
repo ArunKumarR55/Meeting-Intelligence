@@ -15,6 +15,7 @@ from app.services.analytics.extractor import (
     MAX_EXTRACTION_ATTEMPTS,
     MODEL_NAME,
     TRANSIENT_STATUS_CODES,
+    retry_delay_seconds,
 )
 from app.services.audio_ingestion.pii_redactor import redact_pii
 
@@ -123,8 +124,12 @@ def answer_memory_query(
         raise ValueError("user_query must contain non-whitespace content")
     if not source_documents:
         raise ValueError("source_documents must contain at least one retrieved chunk")
-    if settings.gemini_api_key is None:
-        raise RuntimeError("GEMINI_API_KEY must be configured to answer meeting memory queries")
+    api_key = settings.gemini_search_api_key or settings.gemini_api_key
+    if api_key is None:
+        raise RuntimeError(
+            "GEMINI_SEARCH_API_KEY or the fallback GEMINI_API_KEY must be configured "
+            "to answer meeting memory queries"
+        )
 
     safe_query = redact_pii(user_query).strip()
     safe_sources: list[dict[str, Any]] = []
@@ -162,7 +167,7 @@ def answer_memory_query(
                 response_model=MemoryAnswerModel,
                 messages=messages,
                 timeout=60,
-                api_key=settings.gemini_api_key.get_secret_value(),
+                api_key=api_key.get_secret_value(),
             )
             break
         except Exception as error:
@@ -180,13 +185,16 @@ def answer_memory_query(
                         f"The meeting memory provider timed out or was temporarily unavailable{status_text} after {attempt} attempts."
                     ) from error
                 logger.warning(
-                    "Transient meeting memory provider failure (status %s); retry %d of %d; safe failure details=%s",
+                    "Transient meeting memory provider failure (status %s); retry %d of %d "
+                    "after backoff; safe failure details=%s",
                     status_code,
                     attempt,
                     MAX_EXTRACTION_ATTEMPTS - 1,
                     details,
                 )
-                time.sleep(min(4.0, 0.5 * (2 ** (attempt - 1))))
+                delay = retry_delay_seconds(attempt)
+                logger.info("Waiting %.1f seconds before the next meeting memory attempt", delay)
+                time.sleep(delay)
                 continue
             logger.warning("Meeting memory answer generation failed; safe failure details=%s", details)
             raise MemoryAnswerGenerationError(_safe_failure_summary(details)) from error

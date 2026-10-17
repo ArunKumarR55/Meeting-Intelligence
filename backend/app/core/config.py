@@ -33,7 +33,12 @@ class Settings(BaseSettings):
     database_path: Path = PROJECT_ROOT / "data" / "amip.sqlite3"
 
     gemini_api_key: SecretStr | None = None
+    gemini_analysis_api_key: SecretStr | None = None
+    gemini_search_api_key: SecretStr | None = None
     assemblyai_api_key: SecretStr | None = None
+    assemblyai_speech_model: str = "universal-3-pro"
+    assemblyai_transcription_timeout_seconds: int = Field(default=1_800, ge=60, le=7_200)
+    assemblyai_poll_interval_seconds: int = Field(default=3, ge=1, le=30)
     huggingface_token: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("HF_TOKEN", "HUGGINGFACE_TOKEN"),
@@ -69,6 +74,12 @@ class Settings(BaseSettings):
 
     github_token: SecretStr | None = None
 
+    jira_base_url: str | None = None
+    jira_email: str | None = None
+    jira_api_token: SecretStr | None = None
+    jira_project_key: str | None = None
+    jira_issue_type: str = "Task"
+
     cors_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -100,6 +111,24 @@ class Settings(BaseSettings):
             raise ValueError("public_base_url must be an HTTP(S) origin without credentials or path")
         if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise ValueError("public_base_url must use HTTPS outside localhost")
+        return normalized
+
+    @field_validator("jira_base_url")
+    @classmethod
+    def validate_jira_base_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("JIRA_BASE_URL must be an HTTPS URL without credentials, query, or fragment")
         return normalized
 
 

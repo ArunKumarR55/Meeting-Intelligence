@@ -17,6 +17,7 @@ from app.core.database import get_db
 from app.db.models.domain import ActionItem, Meeting, MomEmailRecipient, UnsubscribedEmail
 from app.services.integrations.email_sender import send_mom_emails
 from app.services.workflows.ticket_sync import push_task_to_github
+from app.services.workflows.jira_sync import create_jira_issue
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,12 @@ class GitHubExportRequest(BaseModel):
     action_item_id: int = Field(gt=0)
     repo_url: str = Field(min_length=1, max_length=2_048)
     token: str | None = Field(default=None, min_length=1)
+
+
+class JiraExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    action_item_id: int = Field(gt=0)
 
 
 class MeetingMinutesRequest(BaseModel):
@@ -218,7 +225,13 @@ def export_action_item_to_github(
     if not token:
         raise HTTPException(status_code=503, detail="GitHub token is not configured")
     try:
-        issue = push_task_to_github(action_item.description, request.repo_url, token)
+        issue = push_task_to_github(
+            action_item.description,
+            request.repo_url,
+            token,
+            action_item.due_date,
+            action_item.due_time,
+        )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except TimeoutError as error:
@@ -242,6 +255,65 @@ def export_action_item_to_github(
         "action_item_id": action_item.id,
         "external_ticket_url": issue_url,
         "github_issue_number": issue.get("number"),
+    }
+
+
+@router.post("/export/jira", summary="Create a Jira issue for an action item")
+def export_action_item_to_jira(
+    request: JiraExportRequest,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Create a Jira issue using backend-only credentials and persist its URL."""
+    action_item = db.get(ActionItem, request.action_item_id)
+    if action_item is None:
+        raise HTTPException(status_code=404, detail="Action item not found")
+    if action_item.jira_issue_url:
+        return {
+            "action_item_id": action_item.id,
+            "jira_issue_url": action_item.jira_issue_url,
+            "already_synced": True,
+        }
+
+    token = settings.jira_api_token.get_secret_value() if settings.jira_api_token else None
+    if not all((settings.jira_base_url, settings.jira_email, token, settings.jira_project_key)):
+        raise HTTPException(
+            status_code=503,
+            detail="Jira is not configured. Set JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, and JIRA_PROJECT_KEY in backend/.env.",
+        )
+
+    try:
+        issue = create_jira_issue(
+            task_description=action_item.description,
+            base_url=settings.jira_base_url or "",
+            email=settings.jira_email or "",
+            api_token=token or "",
+            project_key=settings.jira_project_key or "",
+            issue_type=settings.jira_issue_type,
+            due_date=action_item.due_date,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except TimeoutError as error:
+        raise HTTPException(status_code=504, detail="Jira issue creation timed out") from error
+    except RuntimeError as error:
+        logger.warning("Jira issue creation failed for action item %s: %s", action_item.id, error)
+        raise HTTPException(status_code=502, detail="Jira issue creation failed. Check the Jira project and token permissions.") from error
+
+    action_item.jira_issue_url = issue["issue_url"]
+    try:
+        db.commit()
+    except SQLAlchemyError as error:
+        db.rollback()
+        logger.exception("Jira issue was created but its URL could not be stored")
+        raise HTTPException(
+            status_code=500,
+            detail="Jira issue was created, but its URL could not be saved",
+        ) from error
+    return {
+        "action_item_id": action_item.id,
+        "jira_issue_key": issue["issue_key"],
+        "jira_issue_url": issue["issue_url"],
+        "already_synced": False,
     }
 
 

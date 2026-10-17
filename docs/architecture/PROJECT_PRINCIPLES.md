@@ -1,8 +1,8 @@
 # Project Principles
 
-## Privacy-first processing
+## Data handling
 
-Automatic speech recognition and sensitive-data scrubbing must run locally. Treat recordings, transcripts, credentials, and extracted personal or corporate data as sensitive.
+Treat recordings, transcripts, credentials, and extracted personal or corporate data as sensitive. Uploaded and live audio is sent to AssemblyAI for transcription; detected transcript PII is redacted locally before Gemini analysis and local memory indexing. Disclose the audio transfer clearly in the user interface.
 
 ## Cross-platform support
 
@@ -14,4 +14,4 @@ Keep backend and frontend code in their own trees and group implementation by fe
 
 ## Planned stack
 
-FastAPI, SQLAlchemy, SQLite, React, Vite, Tailwind CSS, faster-whisper, pyannote.audio, Silero VAD, Pydantic, LiteLLM or Instructor, ChromaDB, and edge-tts.
+FastAPI, SQLAlchemy, SQLite, React, Vite, Tailwind CSS, AssemblyAI, Pydantic, LiteLLM or Instructor, ChromaDB, and edge-tts.

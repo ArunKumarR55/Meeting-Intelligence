@@ -9,6 +9,7 @@ from app.core.database import Base
 from app.db.models.domain import Meeting
 from app.schemas.domain import AudioProcessingResult, MeetingIntelligenceModel, TranscriptSegment
 from app.api.v1.endpoints import audio as audio_endpoint
+from app.services import meeting_processing
 
 
 def test_upload_persists_redacted_segments_and_intelligence(monkeypatch, tmp_path) -> None:
@@ -20,6 +21,7 @@ def test_upload_persists_redacted_segments_and_intelligence(monkeypatch, tmp_pat
     Base.metadata.create_all(test_engine)
     session = Session(test_engine, expire_on_commit=False)
     monkeypatch.setattr(audio_endpoint, "UPLOAD_DIRECTORY", tmp_path / "uploads")
+    monkeypatch.setattr(audio_endpoint.settings, "assemblyai_api_key", "test-assemblyai-key")
 
     def transcribe(path):
         assert path.exists()
@@ -37,11 +39,11 @@ def test_upload_persists_redacted_segments_and_intelligence(monkeypatch, tmp_pat
             diarization_status="completed",
         )
 
-    monkeypatch.setattr(audio_endpoint, "process_audio_with_diarization", transcribe)
+    monkeypatch.setattr(audio_endpoint, "transcribe_recording", transcribe)
     monkeypatch.setattr(
-        audio_endpoint,
+        meeting_processing,
         "extract_meeting_intelligence",
-        lambda _transcript: MeetingIntelligenceModel(
+        lambda _transcript, meeting_date: MeetingIntelligenceModel(
             executive_summary="The team planned the next steps.",
             key_topics=["Planning"],
             timeline=[],
@@ -50,12 +52,13 @@ def test_upload_persists_redacted_segments_and_intelligence(monkeypatch, tmp_pat
             risks=[],
         ),
     )
-    monkeypatch.setattr(audio_endpoint, "calculate_participation_metrics", lambda _text: {"word_count": 3})
+    monkeypatch.setattr(meeting_processing, "calculate_participation_metrics", lambda _text: {"word_count": 3})
     monkeypatch.setattr(
-        audio_endpoint,
+        meeting_processing,
         "index_meeting_transcript",
         lambda _meeting_id, _text, transcript_segments: None,
     )
+    monkeypatch.setattr(meeting_processing, "track_action_item_drift", lambda _db, _meeting_id: None)
 
     try:
         upload = UploadFile(filename="meeting.wav", file=BytesIO(b"audio-bytes"))

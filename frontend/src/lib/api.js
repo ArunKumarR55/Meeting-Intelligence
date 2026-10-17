@@ -100,6 +100,13 @@ export function getMeetingDetails(id) {
   return request(`/meetings/${encodeURIComponent(id)}`);
 }
 
+export function deleteMeeting(id) {
+  if (!Number.isInteger(Number(id)) || Number(id) <= 0) {
+    throw new TypeError("A valid meeting ID is required.");
+  }
+  return request(`/meetings/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export function updateSpeakerIdentity(meetingId, speakerId, name) {
   if (!Number.isInteger(Number(meetingId)) || Number(meetingId) <= 0) {
     throw new TypeError("A valid meeting ID is required.");
@@ -162,6 +169,17 @@ export function exportToGithub(actionItemId, repoUrl) {
   });
 }
 
+export function exportToJira(actionItemId) {
+  if (!Number.isInteger(Number(actionItemId)) || Number(actionItemId) <= 0) {
+    throw new TypeError("A valid action item ID is required.");
+  }
+  return request("/workflows/export/jira", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action_item_id: Number(actionItemId) }),
+  });
+}
+
 export function getActionItemDrift() {
   return request("/follow-through/drift");
 }
@@ -176,6 +194,31 @@ export function getFollowthroughTasks() {
 
 export function getFollowthroughRisks() {
   return request("/follow-through/risks");
+}
+
+export function updateActionItem(actionItemId, changes) {
+  if (!Number.isInteger(Number(actionItemId)) || Number(actionItemId) <= 0) {
+    throw new TypeError("A valid action item ID is required.");
+  }
+  return request(`/follow-through/tasks/${encodeURIComponent(actionItemId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+}
+
+export function updateDriftReview(driftId, reviewStatus) {
+  if (!Number.isInteger(Number(driftId)) || Number(driftId) <= 0) {
+    throw new TypeError("A valid drift observation ID is required.");
+  }
+  if (!["open", "reviewed", "carried_forward"].includes(reviewStatus)) {
+    throw new TypeError("Drift review status must be open, reviewed, or carried_forward.");
+  }
+  return request(`/follow-through/drift/${encodeURIComponent(driftId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: reviewStatus }),
+  });
 }
 
 export function setFollowthroughRiskStatus(meetingId, riskIndex, status) {

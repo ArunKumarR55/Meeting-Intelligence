@@ -4,7 +4,7 @@ import base64
 import hashlib
 import secrets
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
@@ -367,7 +367,7 @@ def list_upcoming_events(provider: str, db: Session, days: int = 30) -> list[dic
 
 
 def push_action_item_deadline(provider: str, action_item: ActionItem, db: Session) -> dict[str, object]:
-    """Create an all-day calendar event for a dated action item."""
+    """Create a task event or update its existing event from the current deadline."""
     provider = _validate_provider(provider)
     if action_item.due_date is None:
         raise ValueError("This action item has no due date")
@@ -377,13 +377,6 @@ def push_action_item_deadline(provider: str, action_item: ActionItem, db: Sessio
             CalendarTaskSync.action_item_id == action_item.id,
         )
     )
-    if existing_sync is not None:
-        return {
-            "provider": provider,
-            "event_id": existing_sync.event_id,
-            "event_url": existing_sync.event_url,
-            "already_synced": True,
-        }
     due: date = action_item.due_date
     end_date = due + timedelta(days=1)
     meeting_title = action_item.meeting.title if action_item.meeting else "AMIP action item"
@@ -422,6 +415,24 @@ def push_action_item_deadline(provider: str, action_item: ActionItem, db: Sessio
             "start": start_payload,
             "end": end_payload,
         }
+        if existing_sync is not None and existing_sync.event_id:
+            updated = _provider_request(
+                provider,
+                "PATCH",
+                f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{quote(existing_sync.event_id, safe='')}",
+                db,
+                json=payload,
+            )
+            existing_sync.event_url = updated.get("htmlLink") or existing_sync.event_url
+            existing_sync.synced_at = utc_now()
+            db.commit()
+            return {
+                "provider": provider,
+                "event_id": existing_sync.event_id,
+                "event_url": existing_sync.event_url,
+                "already_synced": True,
+                "updated": True,
+            }
         created = _provider_request(
             provider,
             "POST",
@@ -458,6 +469,24 @@ def push_action_item_deadline(provider: str, action_item: ActionItem, db: Sessio
         "body": {"contentType": "Text", "content": description},
         **graph_body,
     }
+    if existing_sync is not None and existing_sync.event_id:
+        updated = _provider_request(
+            provider,
+            "PATCH",
+            f"https://graph.microsoft.com/v1.0/me/events/{quote(existing_sync.event_id, safe='')}",
+            db,
+            json=payload,
+        )
+        existing_sync.event_url = updated.get("webLink") or existing_sync.event_url
+        existing_sync.synced_at = utc_now()
+        db.commit()
+        return {
+            "provider": provider,
+            "event_id": existing_sync.event_id,
+            "event_url": existing_sync.event_url,
+            "already_synced": True,
+            "updated": True,
+        }
     created = _provider_request(
         provider,
         "POST",

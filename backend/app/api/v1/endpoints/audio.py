@@ -9,9 +9,14 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.core.config import PROJECT_ROOT
+from app.core.config import PROJECT_ROOT, settings
 from app.core.database import get_db
-from app.services.audio_ingestion.pipeline import process_audio_with_diarization
+from app.services.audio_ingestion.assemblyai_transcriber import (
+    AssemblyAIConfigurationError,
+    AssemblyAITranscriptionError,
+    AssemblyAITranscriptionTimeout,
+    transcribe_recording,
+)
 from app.services.meeting_processing import persist_meeting_transcript
 
 
@@ -104,10 +109,16 @@ def upload_audio(
         )
     selected_recipients = _parse_recipients(recipients)
 
+    if settings.assemblyai_api_key is None:
+        raise HTTPException(
+            status_code=503,
+            detail="AssemblyAI is not configured. Set ASSEMBLYAI_API_KEY in backend/.env.",
+        )
+
     audio_path = _save_upload(file)
-    failure_stage = "local audio transcription"
+    failure_stage = "AssemblyAI prerecorded transcription"
     try:
-        audio_result = process_audio_with_diarization(audio_path)
+        audio_result = transcribe_recording(audio_path)
         transcript = audio_result.transcript
         if not transcript.strip():
             raise HTTPException(
@@ -132,6 +143,22 @@ def upload_audio(
         db.rollback()
         audio_path.unlink(missing_ok=True)
         raise
+    except AssemblyAIConfigurationError as error:
+        db.rollback()
+        audio_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except AssemblyAITranscriptionTimeout as error:
+        db.rollback()
+        audio_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=504, detail=str(error)) from error
+    except AssemblyAITranscriptionError as error:
+        db.rollback()
+        audio_path.unlink(missing_ok=True)
+        suffix = f" (upstream HTTP {error.upstream_status})" if error.upstream_status else ""
+        raise HTTPException(
+            status_code=502,
+            detail=f"{error}{suffix} Check the AssemblyAI API key, account status, and backend logs.",
+        ) from error
     except Exception as error:
         db.rollback()
         audio_path.unlink(missing_ok=True)

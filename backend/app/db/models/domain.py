@@ -128,6 +128,7 @@ class ActionItem(Base):
         default=TaskStatus.PROMISED,
     )
     external_ticket_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    jira_issue_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -261,6 +262,7 @@ class ActionItemDrift(Base):
         ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False
     )
     drift_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
     match_score: Mapped[float] = mapped_column(nullable=False, default=0.0)
     evidence: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

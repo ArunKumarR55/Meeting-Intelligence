@@ -16,7 +16,11 @@ from app.services.corporate_memory.answering import (
     MemoryProviderUnavailableError,
     answer_memory_query,
 )
-from app.services.corporate_memory.rag_store import query_memory
+from app.services.corporate_memory.rag_store import (
+    TIMESTAMP_METADATA_VERSION,
+    index_meeting_transcript,
+    query_memory,
+)
 from app.services.voice.tts_generator import generate_audio_briefing
 
 
@@ -64,6 +68,49 @@ def search_meeting_memory(
     }
     meetings = db.scalars(select(Meeting).where(Meeting.id.in_(meeting_ids))).all()
     meetings_by_id = {meeting.id: meeting for meeting in meetings}
+
+    # Upgrade old wide chunks the first time they appear in search results.
+    # Older indexes stored the earliest time anywhere in a chunk, so whole
+    # meetings commonly appeared as 0:00. Reindexing uses narrower, timed chunks.
+    stale_meeting_ids = {
+        match.get("meeting_id")
+        for match in matches
+        if isinstance(match.get("meeting_id"), int)
+        and match.get("timestamp_version") != TIMESTAMP_METADATA_VERSION
+    }
+    reindexed_any = False
+    for stale_meeting_id in stale_meeting_ids:
+        stale_meeting = meetings_by_id.get(stale_meeting_id)
+        if stale_meeting is None or not stale_meeting.transcript:
+            continue
+        try:
+            index_meeting_transcript(
+                stale_meeting.id,
+                stale_meeting.transcript,
+                stale_meeting.transcript_segments,
+            )
+            reindexed_any = True
+        except Exception as error:
+            logger.warning(
+                "Could not refresh timestamp index for meeting %s (%s)",
+                stale_meeting_id,
+                type(error).__name__,
+            )
+    if reindexed_any:
+        try:
+            matches = query_memory(request.query, n_results=5, meeting_id=request.meeting_id)
+            refreshed_meeting_ids = {
+                match.get("meeting_id")
+                for match in matches
+                if isinstance(match.get("meeting_id"), int)
+            }
+            if refreshed_meeting_ids:
+                refreshed_meetings = db.scalars(
+                    select(Meeting).where(Meeting.id.in_(refreshed_meeting_ids))
+                ).all()
+                meetings_by_id.update({meeting.id: meeting for meeting in refreshed_meetings})
+        except Exception as error:
+            logger.warning("Could not retrieve refreshed meeting timestamps (%s)", type(error).__name__)
 
     enriched_matches: list[dict[str, object]] = []
     for match in matches:

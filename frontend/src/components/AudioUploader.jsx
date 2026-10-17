@@ -250,7 +250,7 @@ export default function AudioUploader({ onUploaded }) {
         {loading && (
           <div role="status" aria-live="polite" className="mt-5 flex items-start gap-3 rounded-xl bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
             <span className="mt-0.5 h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-indigo-300 border-t-indigo-700" aria-hidden="true" />
-            <span><strong className="block font-semibold">Processing your meeting</strong><span className="mt-1 block text-indigo-800">Running local Whisper transcription, then extracting meeting intelligence. This can take a few minutes.</span></span>
+            <span><strong className="block font-semibold">Processing your meeting</strong><span className="mt-1 block text-indigo-800">AssemblyAI is transcribing the recording. AMIP will then redact sensitive transcript data locally before extracting meeting intelligence.</span></span>
           </div>
         )}
 
@@ -258,7 +258,7 @@ export default function AudioUploader({ onUploaded }) {
           {loading ? "Analyzing recording…" : "Analyze meeting"}
           {!loading && <span aria-hidden="true">→</span>}
         </button>
-        <p className="mt-4 text-center text-xs leading-5 text-slate-400">Audio transcription and sensitive data redaction run locally on this machine.</p>
+        <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">When you upload, the audio file is sent to AssemblyAI for transcription and speaker labeling. AMIP redacts detected sensitive information locally from the transcript before sending it to Gemini for analysis.</p>
         </>}
 
         {mode === "live" && <section className="mt-5 rounded-2xl border border-slate-200 p-4 sm:p-5">

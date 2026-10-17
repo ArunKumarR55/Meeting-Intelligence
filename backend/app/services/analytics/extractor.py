@@ -2,6 +2,7 @@
 
 import logging
 import os
+import random
 import time
 from datetime import date
 
@@ -18,7 +19,7 @@ from app.services.audio_ingestion.pii_redactor import redact_pii
 
 
 logger = logging.getLogger(__name__)
-MODEL_NAME = "gemini/gemini-3.8-flash"
+MODEL_NAME = "gemini/gemini-3.5-flash-lite"
 INSTRUCTOR_CLIENT = instructor.from_litellm(completion)
 
 SYSTEM_PROMPT = """You extract factual meeting intelligence from a transcript.
@@ -36,6 +37,19 @@ from vague phrases such as morning; those should have a date and a null deadline
 """
 MAX_EXTRACTION_ATTEMPTS = 3
 TRANSIENT_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
+RETRY_BASE_DELAY_SECONDS = 5.0
+RETRY_MAX_DELAY_SECONDS = 60.0
+
+
+def retry_delay_seconds(retry_number: int) -> float:
+    """Return an increasing exponential backoff with jitter for transient errors."""
+    if retry_number < 1:
+        raise ValueError("retry_number must be at least 1")
+    delay = min(
+        RETRY_MAX_DELAY_SECONDS,
+        RETRY_BASE_DELAY_SECONDS * (2 ** (retry_number - 1)),
+    )
+    return delay + random.uniform(0.0, min(2.0, delay * 0.2))
 
 
 def _safe_instructor_failure_details(error: Exception) -> list[dict[str, object]]:
@@ -136,8 +150,12 @@ def extract_meeting_intelligence(
     if not redacted_transcript:
         raise ValueError("transcript_text must contain non-whitespace content")
 
-    if settings.gemini_api_key is None:
-        raise RuntimeError("GEMINI_API_KEY must be configured to extract meeting intelligence")
+    api_key = settings.gemini_analysis_api_key or settings.gemini_api_key
+    if api_key is None:
+        raise RuntimeError(
+            "GEMINI_ANALYSIS_API_KEY or the fallback GEMINI_API_KEY must be configured "
+            "to extract meeting intelligence"
+        )
 
     reference_date = meeting_date or date.today()
 
@@ -159,7 +177,7 @@ def extract_meeting_intelligence(
                     },
                 ],
                 timeout=90,
-                api_key=settings.gemini_api_key.get_secret_value(),
+                api_key=api_key.get_secret_value(),
             )
             break
         except Exception as error:
@@ -196,14 +214,16 @@ def extract_meeting_intelligence(
                 )
                 if provider_unavailable:
                     if attempt < MAX_EXTRACTION_ATTEMPTS:
+                        delay = retry_delay_seconds(attempt)
                         logger.warning(
                             "Transient LLM provider failure from Instructor (safe details=%s); "
-                            "retry %d of %d",
+                            "retry %d of %d after %.1f seconds",
                             details,
                             attempt,
                             MAX_EXTRACTION_ATTEMPTS - 1,
+                            delay,
                         )
-                        time.sleep(min(4.0, 0.5 * (2 ** (attempt - 1))))
+                        time.sleep(delay)
                         continue
                     status_text = ", ".join(str(code) for code in sorted(nested_statuses))
                     failure_reason = f" (HTTP {status_text})" if status_text else ""
@@ -235,12 +255,14 @@ def extract_meeting_intelligence(
                 )
                 raise
             logger.warning(
-                "Transient LLM provider failure (status %s); retry %d of %d",
+                "Transient LLM provider failure (status %s); retry %d of %d after backoff",
                 status_code,
                 attempt,
                 MAX_EXTRACTION_ATTEMPTS - 1,
             )
-            time.sleep(0.5 * attempt)
+            delay = retry_delay_seconds(attempt)
+            logger.info("Waiting %.1f seconds before the next LLM provider attempt", delay)
+            time.sleep(delay)
 
     if not isinstance(result, MeetingIntelligenceModel):
         raise TypeError("Instructor returned a value outside the required Pydantic schema")

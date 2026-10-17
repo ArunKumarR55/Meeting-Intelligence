@@ -2,7 +2,7 @@
 
 The live assistant is an optional input path. It opens Google Meet or Microsoft Teams in a visible local Chromium window, uses the participant name **AMIP Meeting Assistant**, keeps its own microphone and camera off, and starts system-output capture only after it has entered the call. Sign-in, CAPTCHA, lobby approval, and host admission remain under the user's control. The operator must have permission to record and notify meeting participants.
 
-When the operator stops a session, AMIP sends its WAV through the same `/api/v1/audio/upload` implementation used by manual uploads. Whisper, local redaction, optional diarization, extraction, persistence, RAG indexing, and selected MOM email recipients therefore follow the existing path. If capture succeeds but that pipeline fails, the dashboard offers the WAV for download and manual upload. If the local capture device or browser cannot start, manual upload remains available as usual.
+Live meeting capture uses AssemblyAI streaming. Manual uploads use AssemblyAI's prerecorded transcription API. In both cases, the resulting transcript is locally redacted before Gemini extraction, persistence, and RAG indexing. Manual audio upload remains available if live capture cannot start or ends unexpectedly.
 
 ## Install the browser runtime
 

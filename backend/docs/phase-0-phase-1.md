@@ -12,15 +12,11 @@ The API startup keeps `Base.metadata.create_all` for first-run installations and
 
 ## Phase 1 scope
 
-- Transcribe locally with faster-whisper and retain redacted, timestamped transcript segments.
-- Run pyannote locally when a Hugging Face token has access to the gated `pyannote/speaker-diarization-community-1` model.
-- Align speaker turns to transcript segments by maximum time overlap.
+- Send uploaded audio to AssemblyAI's prerecorded transcription API with speaker labels enabled.
+- Retain timestamped utterances and stable AMIP speaker IDs returned by AssemblyAI.
+- Redact detected PII locally before sending the transcript to Gemini or indexing it in ChromaDB.
 - Persist the diarization status and show speaker labels and timestamps in the meeting transcript view.
 - Continue uploads when diarization is not configured or unavailable; the UI reports that state instead of presenting unlabeled speech as identified speakers.
 - If a sensitive value crosses ASR segment boundaries, retain only the globally redacted transcript as an unlabeled segment.
 
-## Hugging Face model access
-
-The pyannote model is gated. Each developer must accept the model conditions on Hugging Face, create a read token, and place it in `backend/.env` as `HF_TOKEN=...`. Never commit the token. Model weights are cached locally in `data/models/pyannote/`; the audio itself is processed on the user's machine and is not uploaded to Hugging Face by this application.
-
-Without an accepted token, the transcript and analytics continue to work and the meeting records `diarization_status` as `not_configured`. A model download or inference error records `unavailable` and does not fail the meeting upload.
+Uploaded audio is transferred to AssemblyAI for transcription and speaker labeling. Configure `ASSEMBLYAI_API_KEY` in `backend/.env`. The API key remains on the backend and is not sent to the browser. If AssemblyAI returns no speaker labels, transcription and meeting analysis continue with unlabeled segments.

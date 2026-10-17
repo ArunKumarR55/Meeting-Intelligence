@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import ActionItemControls from "./ActionItemControls";
 import {
   connectCalendar,
   disconnectCalendar,
@@ -10,6 +11,7 @@ import {
   getReminderStatus,
   setFollowthroughRiskStatus,
   syncTaskToCalendar,
+  updateDriftReview,
 } from "../lib/api";
 
 const PROVIDERS = [
@@ -65,12 +67,13 @@ function DriftBadge({ value }) {
   );
 }
 
-export default function FollowThrough() {
-  const [activePanel, setActivePanel] = useState("drift");
+export default function FollowThrough({ initialPanel = "drift" }) {
+  const [activePanel, setActivePanel] = useState(initialPanel);
   const [drift, setDrift] = useState([]);
   const [reminders, setReminders] = useState(null);
   const [connections, setConnections] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [showCompletedTasks, setShowCompletedTasks] = useState(false);
   const [risks, setRisks] = useState([]);
   const [eventsByProvider, setEventsByProvider] = useState({});
   const [syncResults, setSyncResults] = useState({});
@@ -113,13 +116,38 @@ export default function FollowThrough() {
     void refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (PANELS.some((panel) => panel.id === initialPanel)) setActivePanel(initialPanel);
+  }, [initialPanel]);
+
   const connected = (provider) => connections.find((item) => item.provider === provider)?.connected;
   const sortedDrift = [...drift].sort((first, second) => {
-    const firstDate = new Date(first.created_at || 0).valueOf();
-    const secondDate = new Date(second.created_at || 0).valueOf();
-    return secondDate - firstDate
-      || Number(second.observed_meeting_id || second.source_meeting_id || 0)
-        - Number(first.observed_meeting_id || first.source_meeting_id || 0)
+    const priority = (item) => {
+      const status = item.review_status || "open";
+      if (
+        status === "open"
+        && item.drift_type === "carried_forward"
+        && (item.detection_source || "automatic") === "automatic"
+      ) return 0;
+      if (
+        (item.detection_source || "automatic") === "manual"
+        || ["carried_forward", "reviewed", "resolved"].includes(status)
+      ) return 1;
+      return 2;
+    };
+    const priorityDifference = priority(first) - priority(second);
+    if (priorityDifference) return priorityDifference;
+    const firstMeetingDate = new Date(
+      first.observed_meeting_created_at || first.created_at || 0,
+    ).valueOf();
+    const secondMeetingDate = new Date(
+      second.observed_meeting_created_at || second.created_at || 0,
+    ).valueOf();
+    if (firstMeetingDate !== secondMeetingDate) return secondMeetingDate - firstMeetingDate;
+    const meetingOrder = Number(second.observed_meeting_id || second.source_meeting_id || 0)
+      - Number(first.observed_meeting_id || first.source_meeting_id || 0);
+    if (meetingOrder) return meetingOrder;
+    return new Date(second.created_at || 0).valueOf() - new Date(first.created_at || 0).valueOf()
       || Number(second.id || 0) - Number(first.id || 0);
   });
 
@@ -181,11 +209,47 @@ export default function FollowThrough() {
     }
   }
 
+  async function updateDriftStatus(item, nextStatus) {
+    setBusy(`drift:${item.id}`);
+    setError("");
+    setNotice("");
+    try {
+      await updateDriftReview(item.id, nextStatus);
+      setDrift((previous) => previous.map((entry) => entry.id === item.id ? { ...entry, review_status: nextStatus } : entry));
+      const messages = {
+        open: "Drift observation reopened for review.",
+        reviewed: "Drift observation marked as reviewed.",
+        carried_forward: "Drift observation manually confirmed as carried forward.",
+      };
+      setNotice(messages[nextStatus]);
+    } catch (requestError) {
+      setError(requestError.message || "Could not update the drift review state.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function applyTaskUpdate(updated) {
+    setTasks((previous) => previous.map((item) => item.id === updated.id ? { ...item, ...updated } : item));
+    setDrift((previous) => previous.map((item) => item.prior_action_item_id === updated.id
+      ? { ...item, prior_due_date: updated.due_date, prior_due_time: updated.due_time, prior_status: updated.status }
+      : item));
+    void getReminderStatus().then(setReminders).catch(() => {});
+    if (updated.sync_warnings?.length) {
+      setNotice(`Deadline saved, but a linked service needs attention: ${updated.sync_warnings.join("; ")}`);
+    } else {
+      setNotice(updated.status === "Completed" ? "Action item marked complete." : "Action item updated.");
+    }
+  }
+
   const cards = [
     { label: "Overdue tasks", value: reminders?.overdue_task_count ?? "—", detail: "Open action items past their deadline" },
     { label: "Open risks", value: reminders?.open_risk_count ?? "—", detail: "Risks currently tracked in meeting records" },
     { label: "Drift observations", value: drift.length, detail: "Follow-up signals across meetings" },
   ];
+  const openTaskCount = tasks.filter((task) => task.status !== "Completed").length;
+  const completedTaskCount = tasks.length - openTaskCount;
+  const visibleTasks = tasks.filter((task) => showCompletedTasks || task.status !== "Completed");
 
   return (
     <div className="space-y-6">
@@ -199,7 +263,7 @@ export default function FollowThrough() {
       <nav aria-label="Follow-through sections" className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-3">
         {PANELS.map((panel) => {
           const selected = activePanel === panel.id;
-          const count = panel.id === "drift" ? drift.length : panel.id === "calendar" ? tasks.length : risks.length;
+          const count = panel.id === "drift" ? drift.length : panel.id === "calendar" ? openTaskCount : risks.length;
           return <button key={panel.id} type="button" aria-current={selected ? "page" : undefined} onClick={() => setActivePanel(panel.id)} className={`rounded-xl px-4 py-3 text-left transition ${selected ? "bg-indigo-600 text-white shadow-sm" : "text-slate-700 hover:bg-slate-50"}`}>
             <span className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">{panel.label}</span><span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${selected ? "bg-white/15 text-white" : "bg-slate-100 text-slate-500"}`}>{count}</span></span>
             <span className={`mt-1 block text-[11px] ${selected ? "text-indigo-100" : "text-slate-500"}`}>{panel.description}</span>
@@ -208,10 +272,34 @@ export default function FollowThrough() {
       </nav>
 
       {activePanel === "drift" && <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-indigo-600">Task continuity · newest first</p><h2 className="mt-1 text-base font-bold text-slate-900">Cross-meeting action drift</h2></div><button type="button" onClick={() => void refresh()} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">Refresh</button></div>
+        <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-indigo-600">Reviewed first · then newest meeting first</p><h2 className="mt-1 text-base font-bold text-slate-900">Cross-meeting action drift</h2></div><button type="button" onClick={() => void refresh()} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">Refresh</button></div>
         <p className="mt-2 text-xs leading-5 text-slate-500">A missing mention is a prompt for review, not proof that a task was dropped. AMIP never changes a task’s status automatically.</p>
         <div className="mt-4 space-y-3">
-          {loading ? <p className="rounded-xl bg-slate-50 p-5 text-center text-sm text-slate-500">Loading observations…</p> : sortedDrift.length === 0 ? <p className="rounded-xl bg-slate-50 p-5 text-center text-sm text-slate-500">No cross-meeting comparisons yet. New uploads will be checked against earlier open tasks.</p> : sortedDrift.slice(0, 50).map((item) => <article key={item.id} className="rounded-2xl border border-slate-100 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><DriftBadge value={item.drift_type} /><span className="text-[10px] font-semibold text-slate-400">{item.match_score ? `${Math.round(item.match_score * 100)}% match` : "No matching task"}</span></div><h3 className="mt-3 text-sm font-semibold leading-5 text-slate-900">{item.prior_description}</h3><p className="mt-1 text-[11px] text-slate-500">{item.source_meeting_title}{item.prior_owner ? ` · ${item.prior_owner}` : ""}{item.prior_due_date ? ` · Due ${item.prior_due_date}` : ""}</p><p className="mt-3 text-xs leading-5 text-slate-600">{item.evidence}</p>{item.observed_description && <div className="mt-3 rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Later meeting · {item.observed_meeting_title}</p><p className="mt-1 text-xs leading-5 text-slate-700">{item.observed_description}</p></div>}</article>)}
+          {loading ? <p className="rounded-xl bg-slate-50 p-5 text-center text-sm text-slate-500">Loading observations…</p> : sortedDrift.length === 0 ? <p className="rounded-xl bg-slate-50 p-5 text-center text-sm text-slate-500">No cross-meeting comparisons yet. New uploads will be checked against earlier open tasks.</p> : sortedDrift.slice(0, 50).map((item) => {
+            const reviewStatus = item.review_status || "open";
+            const needsReview = reviewStatus === "open"
+              && item.drift_type !== "carried_forward"
+              && item.detection_source !== "manual";
+            const detectionLabel = item.detection_source === "manual"
+              ? "Manually detected"
+              : reviewStatus === "carried_forward"
+                ? "Manually confirmed carry-forward"
+                : item.drift_type === "carried_forward"
+                  ? "Automatically detected carry-forward"
+                  : "Automatically detected drift";
+            const reviewActions = [
+              { status: "carried_forward", label: "Mark carried forward" },
+              { status: "reviewed", label: "Mark reviewed" },
+            ];
+            return <article key={item.id} className="rounded-2xl border border-slate-100 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-2"><DriftBadge value={item.drift_type} /><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${item.detection_source === "manual" ? "bg-violet-50 text-violet-700" : "bg-indigo-50 text-indigo-700"}`}>{detectionLabel}</span>{needsReview && <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600">Needs review</span>}</div><span className="text-[10px] font-semibold text-slate-400">{item.match_score ? `${Math.round(item.match_score * 100)}% match` : "No matching task"}</span></div>
+              <h3 className="mt-3 text-sm font-semibold leading-5 text-slate-900">{item.prior_description}</h3>
+              <p className="mt-1 text-[11px] text-slate-500">{item.source_meeting_title}{item.prior_owner ? ` · ${item.prior_owner}` : ""}{item.prior_due_date ? ` · Due ${item.prior_due_date}${item.prior_due_time ? ` at ${item.prior_due_time}` : ""}` : " · No due date"}{item.prior_status ? ` · ${item.prior_status}` : ""}</p>
+              <p className="mt-3 text-xs leading-5 text-slate-600">{item.evidence}</p>
+              {item.observed_description && <div className="mt-3 rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Later meeting · {item.observed_meeting_title}</p><p className="mt-1 text-xs leading-5 text-slate-700">{item.observed_description}</p></div>}
+              {needsReview && <div className="mt-3 border-t border-slate-100 pt-3"><p className="text-[11px] leading-5 text-slate-500">Review actions update this observation only; they do not change the underlying action item status.</p><div className="mt-2 flex flex-wrap gap-2">{reviewActions.map((action) => <button key={action.status} type="button" onClick={() => void updateDriftStatus(item, action.status)} disabled={busy === `drift:${item.id}`} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-60">{busy === `drift:${item.id}` ? "Saving…" : action.label}</button>)}</div></div>}
+            </article>;
+          })}
         </div>
       </section>}
 
@@ -227,8 +315,8 @@ export default function FollowThrough() {
           })}</div>
         </section>
 
-        <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-indigo-600">Calendar-ready work</p><h2 className="mt-1 text-base font-bold text-slate-900">Action-item deadlines</h2><p className="mt-1 text-xs text-slate-500">Tasks with a detected due date appear here. Sync is idempotent per provider.</p></div>
-          <div className="mt-4 divide-y divide-slate-100">{loading ? <p className="py-6 text-center text-sm text-slate-500">Loading dated tasks…</p> : tasks.length === 0 ? <p className="py-6 text-center text-sm text-slate-500">No open action items have a due date.</p> : tasks.map((task) => <div key={task.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center"><div className="min-w-0 flex-1"><p className="text-sm font-semibold leading-5 text-slate-800">{task.description}</p><p className="mt-1 text-[11px] text-slate-500">{task.meeting_title}{task.owner ? ` · ${task.owner}` : " · Unassigned"} · Due {task.due_date}{task.due_time ? ` at ${task.due_time}` : ""}</p></div><div className="flex flex-wrap gap-2">{PROVIDERS.filter((provider) => connected(provider.id)).map((provider) => { const key = `${provider.id}:${task.id}`; const result = syncResults[key]; return <div key={provider.id} className="flex flex-col gap-1"><button type="button" onClick={() => void syncTask(provider.id, task.id)} disabled={busy === `sync:${key}`} className="rounded-lg border border-slate-200 px-3 py-2 text-[10px] font-semibold text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 disabled:opacity-50">{busy === `sync:${key}` ? "Adding…" : result ? (result.already_synced ? "Already added" : "Added") : `Add to ${provider.id === "google" ? "Google" : "Outlook"}`}</button>{result?.event_url && <a href={result.event_url} target="_blank" rel="noreferrer" className="text-[10px] font-semibold text-indigo-600 hover:underline">View event ↗</a>}</div>; })}{!PROVIDERS.some((provider) => connected(provider.id)) && <span className="self-center text-[10px] text-slate-400">Connect a calendar above to sync</span>}</div></div>)}</div>
+        <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm sm:p-6"><div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-[10px] font-bold uppercase tracking-[0.14em] text-indigo-600">Open work</p><h2 className="mt-1 text-base font-bold text-slate-900">Action items</h2><p className="mt-1 text-xs text-slate-500">Add or adjust deadlines, complete tasks, and sync dated items to a connected calendar.</p></div><button type="button" onClick={() => setShowCompletedTasks((value) => !value)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">{showCompletedTasks ? "Hide" : "Show"} completed ({completedTaskCount})</button></div>
+          <div className="mt-4 divide-y divide-slate-100">{loading ? <p className="py-6 text-center text-sm text-slate-500">Loading action items…</p> : visibleTasks.length === 0 ? <p className="py-6 text-center text-sm text-slate-500">{showCompletedTasks ? "No action items have been added yet." : "No open action items."}</p> : visibleTasks.map((task) => <div key={task.id} className={`flex flex-col gap-3 py-4 lg:flex-row lg:items-start ${task.status === "Completed" ? "opacity-65" : ""}`}><div className="min-w-0 flex-1"><p className={`text-sm font-semibold leading-5 text-slate-800 ${task.status === "Completed" ? "line-through" : ""}`}>{task.description}</p><p className="mt-1 text-[11px] text-slate-500">{task.meeting_title}{task.owner ? ` · ${task.owner}` : " · Unassigned"}{task.due_date ? ` · Due ${task.due_date}${task.due_time ? ` at ${task.due_time}` : ""}` : " · No due date"}{task.status ? ` · ${task.status}` : ""}</p><ActionItemControls task={task} onUpdated={applyTaskUpdate} compact /></div><div className="flex flex-wrap gap-2 lg:justify-end">{task.status === "Completed" ? <span className="self-center text-[10px] text-slate-400">Completed tasks are not synced to calendars</span> : task.due_date ? PROVIDERS.filter((provider) => connected(provider.id)).map((provider) => { const key = `${provider.id}:${task.id}`; const result = syncResults[key]; return <div key={provider.id} className="flex flex-col gap-1"><button type="button" onClick={() => void syncTask(provider.id, task.id)} disabled={busy === `sync:${key}`} className="rounded-lg border border-slate-200 px-3 py-2 text-[10px] font-semibold text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 disabled:opacity-50">{busy === `sync:${key}` ? "Updating…" : result?.updated ? "Calendar updated" : result ? (result.already_synced ? "Already added" : "Added") : `Add to ${provider.id === "google" ? "Google" : "Outlook"}`}</button>{result?.event_url && <a href={result.event_url} target="_blank" rel="noreferrer" className="text-[10px] font-semibold text-indigo-600 hover:underline">View event ↗</a>}</div>; }) : <span className="self-center text-[10px] text-slate-400">Add a due date before calendar sync</span>}{task.status !== "Completed" && task.due_date && !PROVIDERS.some((provider) => connected(provider.id)) && <span className="self-center text-[10px] text-slate-400">Connect a calendar above to sync</span>}</div></div>)}</div>
         </section>
       </div>}
 
