@@ -264,7 +264,7 @@ export default function AudioUploader({ onUploaded }) {
         {mode === "live" && <section className="mt-5 rounded-2xl border border-slate-200 p-4 sm:p-5">
           <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-amber-100 bg-amber-50/70 p-3.5 text-xs leading-5 text-amber-950">
             <input type="checkbox" checked={recordingConsent} onChange={(event) => setRecordingConsent(event.target.checked)} disabled={liveBusy} className="mt-0.5 h-4 w-4 shrink-0 rounded border-amber-300 text-indigo-600 focus:ring-indigo-500" />
-            <span>I have permission to record this meeting and will notify its participants. I understand audio is sent to AssemblyAI for live transcription and the transcript is analyzed by Gemini.</span>
+            <span>I have permission to record this meeting and will notify its participants. I understand audio is sent to AssemblyAI for live transcription and the transcript is analyzed by Gemini. A temporary WAV backup is held in this browser and can be downloaded after recording.</span>
           </label>
           <p className="mt-3 text-xs leading-5 text-slate-500">Open the meeting in your browser first. Select its tab in the browser sharing prompt and enable tab audio. The optional microphone input captures your own voice too.</p>
           <LiveMeetingRecorder

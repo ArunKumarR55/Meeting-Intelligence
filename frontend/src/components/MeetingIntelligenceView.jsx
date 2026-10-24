@@ -27,6 +27,57 @@ function severityStyles(value) {
   return "bg-emerald-50 text-emerald-700 ring-emerald-600/10";
 }
 
+function SpokenRecap({ meetingId }) {
+  const [audioUrl, setAudioUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => () => {
+    if (audioUrl) URL.revokeObjectURL(audioUrl);
+  }, [audioUrl]);
+
+  async function loadRecap() {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/v1/rag/briefing/${encodeURIComponent(meetingId)}`, {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        const detail = typeof payload?.detail === "string" ? payload.detail : `The recap request failed (HTTP ${response.status}).`;
+        throw new Error(detail);
+      }
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.toLowerCase().includes("audio/mpeg")) {
+        throw new Error(`The recap endpoint returned ${contentType || "an unknown content type"}, not MP3 audio.`);
+      }
+      const audioBlob = await response.blob();
+      if (!audioBlob.size) throw new Error("The recap endpoint returned an empty audio file.");
+      setAudioUrl(URL.createObjectURL(audioBlob));
+    } catch (requestError) {
+      setError(requestError.message || "Could not load the spoken recap.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl bg-slate-50 p-4">
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Spoken recap</p>
+      {audioUrl
+        ? <audio className="mt-3 w-full" controls preload="metadata" src={audioUrl} onError={() => setError("The recap was generated, but this browser could not decode the audio.")}>
+          Your browser does not support the audio player.
+        </audio>
+        : <button type="button" onClick={() => void loadRecap()} disabled={loading} className="mt-3 inline-flex min-h-10 w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:border-indigo-200 hover:bg-indigo-50 disabled:cursor-wait disabled:opacity-60">
+          {loading ? "Generating spoken recap…" : "Generate spoken recap"}
+        </button>}
+      {error && <div role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-xs leading-5 text-rose-700"><p>{error}</p><button type="button" onClick={() => void loadRecap()} disabled={loading} className="mt-2 font-semibold underline disabled:opacity-60">{loading ? "Retrying…" : "Retry recap"}</button></div>}
+    </div>
+  );
+}
+
 function normalizeSpeakerLabel(value) {
   return String(value ?? "").toLocaleLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -110,7 +161,7 @@ function MeetingMinutesPanel({ meeting }) {
   );
 }
 
-function TaskCard({ task, speakerIdentities, transcriptSegments, calendarConnections, calendarLoading, onSyncToCalendar, calendarBusy, calendarResults, calendarErrors, onActionItemUpdated }) {
+function TaskCard({ task, speakerIdentities, transcriptSegments, calendarConnections, calendarLoading, onSyncToCalendar, calendarBusy, calendarResults, setCalendarResults, calendarErrors, onActionItemUpdated }) {
   const [repoUrl, setRepoUrl] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -150,7 +201,7 @@ function TaskCard({ task, speakerIdentities, transcriptSegments, calendarConnect
   }
 
   function handleActionItemUpdated(updated) {
-    if (updated.calendar_sync_results?.length) {
+    if (updated.calendar_sync_results?.length && typeof setCalendarResults === "function") {
       setCalendarResults((current) => ({
         ...current,
         ...Object.fromEntries(updated.calendar_sync_results.map((result) => [`${result.provider}:${task.id}`, result])),
@@ -429,12 +480,7 @@ export default function MeetingIntelligenceView({ meeting, loading = false, onBa
             <p className="mt-2 text-sm text-slate-500">Recorded {formatDate(meeting.date_recorded)}</p>
           </div>
           <div className="flex w-full shrink-0 flex-col gap-3 sm:w-72">
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Spoken recap</p>
-            <audio className="mt-3 w-full" controls preload="none" src={`/api/v1/rag/briefing/${encodeURIComponent(meeting.id)}`}>
-              Your browser does not support the audio player.
-            </audio>
-          </div>
+          <SpokenRecap key={meeting.id} meetingId={meeting.id} />
           <button type="button" onClick={() => void removeMeeting()} disabled={deleting} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-700 transition hover:bg-rose-50 disabled:cursor-wait disabled:opacity-60">{deleting ? "Deleting meeting…" : "Delete meeting"}</button>
           </div>
         </div>
@@ -452,7 +498,7 @@ export default function MeetingIntelligenceView({ meeting, loading = false, onBa
       <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-7">
         <SectionHeading eyebrow="Follow-through" title="Action items" count={actionItems.length} />
         {calendarConnectionError && <p role="status" className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">Calendar connection status is unavailable: {calendarConnectionError}</p>}
-        {actionItems.length ? <ul className="mt-4 space-y-3">{actionItems.map((task) => <TaskCard key={task.id} task={task} speakerIdentities={speakerIdentities} transcriptSegments={transcriptSegments} calendarConnections={calendarConnections} calendarLoading={calendarLoading} onSyncToCalendar={addTaskToCalendar} calendarBusy={calendarBusy} calendarResults={calendarResults} calendarErrors={calendarErrors} onActionItemUpdated={onActionItemUpdated} />)}</ul> : <p className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No action items were extracted.</p>}
+        {actionItems.length ? <ul className="mt-4 space-y-3">{actionItems.map((task) => <TaskCard key={task.id} task={task} speakerIdentities={speakerIdentities} transcriptSegments={transcriptSegments} calendarConnections={calendarConnections} calendarLoading={calendarLoading} onSyncToCalendar={addTaskToCalendar} calendarBusy={calendarBusy} calendarResults={calendarResults} setCalendarResults={setCalendarResults} calendarErrors={calendarErrors} onActionItemUpdated={onActionItemUpdated} />)}</ul> : <p className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">No action items were extracted.</p>}
       </section>
 
       <div className="grid gap-5 xl:grid-cols-2">

@@ -245,4 +245,6 @@ async def get_meeting_briefing(
         path=briefing_path,
         media_type="audio/mpeg",
         filename=briefing_path.name,
+        content_disposition_type="inline",
+        headers={"Cache-Control": "no-store"},
     )

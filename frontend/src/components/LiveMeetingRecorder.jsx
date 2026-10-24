@@ -2,8 +2,44 @@ import { useEffect, useRef, useState } from "react";
 import { getAssemblyAIToken, processLiveMeeting } from "../lib/api";
 
 const SAMPLE_RATE = 16_000;
+const MAX_BACKUP_BYTES = 150 * 1024 * 1024;
 const STREAM_URL = "wss://streaming.assemblyai.com/v3/ws";
 const ACTIVE_STATES = new Set(["requesting", "connecting", "recording", "stopping", "processing"]);
+
+function makeWavBlob(pcmChunks, dataBytes) {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  const writeText = (offset, value) => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  };
+
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + dataBytes, true);
+  writeText(8, "WAVE");
+  writeText(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, SAMPLE_RATE, true);
+  view.setUint32(28, SAMPLE_RATE * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, dataBytes, true);
+
+  return new Blob([header, ...pcmChunks], { type: "audio/wav" });
+}
+
+function recordingFilename(title) {
+  const safeTitle = String(title || "meeting")
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N}._-]+/gu, "_")
+    .replace(/^[_\.]+|[_\.]+$/g, "")
+    .slice(0, 80);
+  return `${safeTitle || "meeting"}_recording.wav`;
+}
 
 function friendlySocketError(event) {
   const reason = String(event?.reason || "").trim();
@@ -35,7 +71,10 @@ export default function LiveMeetingRecorder({
   const [partialTranscript, setPartialTranscript] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [recordingUrl, setRecordingUrl] = useState("");
+  const [backupNotice, setBackupNotice] = useState("");
   const resourcesRef = useRef(null);
+  const recordingUrlRef = useRef(null);
   const turnsRef = useRef([]);
   const stateRef = useRef(status);
   const stopRequestedRef = useRef(false);
@@ -58,6 +97,10 @@ export default function LiveMeetingRecorder({
       resources.socket.close(1000, "Recorder unmounted");
     }
     resources.audioContext?.close().catch(() => {});
+  }, []);
+
+  useEffect(() => () => {
+    if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
   }, []);
 
   function addFinalTurn(turn) {
@@ -137,6 +180,19 @@ export default function LiveMeetingRecorder({
         resources.worklet.port.postMessage({ type: "stop" });
       });
     }
+    if (!resources.recordingPreserved) {
+      resources.recordingPreserved = true;
+      if (resources.backupTooLarge) {
+        setBackupNotice("The live audio exceeded the 150 MB backup limit. Transcription continued, but no WAV backup was retained.");
+      } else if (resources.recordedChunks?.length) {
+        const blob = makeWavBlob(resources.recordedChunks, resources.recordedBytes);
+        if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+        const url = URL.createObjectURL(blob);
+        recordingUrlRef.current = url;
+        setRecordingUrl(url);
+        setBackupNotice("A WAV backup is ready. Download it if you may need to re-upload the meeting audio.");
+      }
+    }
     for (const source of resources.sources ?? []) {
       try { source.disconnect(); } catch { /* Already disconnected. */ }
     }
@@ -188,6 +244,10 @@ export default function LiveMeetingRecorder({
     setTurns([]);
     turnsRef.current = [];
     setPartialTranscript("");
+    if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+    recordingUrlRef.current = null;
+    setRecordingUrl("");
+    setBackupNotice("");
     stopRequestedRef.current = false;
     setStatus("requesting");
 
@@ -197,7 +257,19 @@ export default function LiveMeetingRecorder({
         video: true,
         audio: true,
       });
-      resources = { displayStream, microphoneStream: null, audioContext: null, socket: null, worklet: null, sources: [], sessionBegun: false };
+      resources = {
+        displayStream,
+        microphoneStream: null,
+        audioContext: null,
+        socket: null,
+        worklet: null,
+        sources: [],
+        sessionBegun: false,
+        recordedChunks: [],
+        recordedBytes: 0,
+        backupTooLarge: false,
+        recordingPreserved: false,
+      };
       resourcesRef.current = resources;
       for (const track of displayStream.getTracks()) {
         track.addEventListener("ended", () => {
@@ -293,7 +365,19 @@ export default function LiveMeetingRecorder({
           return;
         }
         const currentSocket = resources.socket;
-        if (event.data?.type !== "pcm16" || !currentSocket || currentSocket.readyState !== WebSocket.OPEN || !resources.sessionBegun) return;
+        if (event.data?.type !== "pcm16") return;
+        if (!resources.backupTooLarge) {
+          const chunk = event.data.buffer.slice(0);
+          if (resources.recordedBytes + chunk.byteLength > MAX_BACKUP_BYTES) {
+            resources.backupTooLarge = true;
+            resources.recordedChunks = [];
+            resources.recordedBytes = 0;
+          } else {
+            resources.recordedChunks.push(chunk);
+            resources.recordedBytes += chunk.byteLength;
+          }
+        }
+        if (!currentSocket || currentSocket.readyState !== WebSocket.OPEN || !resources.sessionBegun) return;
         currentSocket.send(event.data.buffer);
       };
       await audioContext.resume();
@@ -366,6 +450,10 @@ export default function LiveMeetingRecorder({
     setPartialTranscript("");
     setError("");
     setMessage("");
+    if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+    recordingUrlRef.current = null;
+    setRecordingUrl("");
+    setBackupNotice("");
     stopRequestedRef.current = false;
   }
 
@@ -409,6 +497,7 @@ export default function LiveMeetingRecorder({
       {status === "recording" && <div className="mt-3 flex items-center gap-2 text-xs font-medium text-rose-700"><span className="h-2 w-2 animate-pulse rounded-full bg-rose-500" />Live transcription active</div>}
       {message && <p className="mt-3 text-xs leading-5 text-slate-500" aria-live="polite">{message}</p>}
       {error && <p role="alert" className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</p>}
+      {backupNotice && <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5"><p className="text-xs leading-5 text-slate-600">{backupNotice}</p>{recordingUrl && <a href={recordingUrl} download={recordingFilename(title)} className="shrink-0 rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">Download WAV backup</a>}</div>}
       {(turns.length > 0 || partialTranscript) && <div className="mt-4 max-h-64 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-3" aria-live="polite">
         <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">Live transcript · {turns.length} finalized turns</p>
         <div className="mt-2 space-y-2">

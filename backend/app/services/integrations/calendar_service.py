@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import re
 import secrets
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote, urlencode
@@ -137,7 +138,20 @@ def _post_token(provider: str, form: dict[str, str]) -> dict[str, object]:
     except requests.RequestException as error:
         raise CalendarProviderError("Calendar identity provider could not be reached") from error
     if not response.ok:
-        raise CalendarProviderError(f"Calendar identity provider rejected the token request (HTTP {response.status_code})")
+        error_code = None
+        try:
+            error_payload = response.json()
+        except ValueError:
+            error_payload = None
+        if isinstance(error_payload, dict):
+            candidate = error_payload.get("error")
+            if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", candidate):
+                error_code = candidate
+        diagnostic = f", provider error {error_code}" if error_code else ""
+        raise CalendarProviderError(
+            "Calendar identity provider rejected the token request "
+            f"(HTTP {response.status_code}{diagnostic})"
+        )
     payload = response.json()
     if not isinstance(payload, dict) or not isinstance(payload.get("access_token"), str):
         raise CalendarProviderError("Calendar identity provider returned an invalid token response")
